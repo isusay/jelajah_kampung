@@ -56,6 +56,8 @@ input:focus,textarea:focus,select:focus{border-color:var(--gold);box-shadow:0 0 
 .chr:hover img{transform:translateY(-3px)}
 .chr.on{border-color:var(--goldd);background:linear-gradient(180deg,#fff6dc,#f4e2b2);box-shadow:0 0 0 3px rgba(217,180,106,.45)}
 .chr.on small{color:#7a5a1d}
+.dlock{display:flex;flex-direction:column;gap:12px}
+#d-pin{text-align:center;letter-spacing:8px;font-size:20px;font-weight:700}
 #j-code{font-family:"Cinzel",serif;font-weight:700;font-size:20px;letter-spacing:6px;text-transform:uppercase;text-align:center}
 
 /* tombol pil */
@@ -225,11 +227,20 @@ td.nm{white-space:normal;min-width:120px}
     </div>
     <div class="card">
       <h2>Saya dosen</h2>
-      <p class="muted" id="bank-info"></p>
-      <button id="h-edit" class="btn">Kelola soal</button>
-      <button id="h-create" class="btn primary">Buka ruangan ujian</button>
-      <div id="h-resume"></div>
-      <p id="h-err" class="err"></p>
+      <div id="dosen-lock" class="dlock">
+        <p class="muted">Menu dosen terkunci. Masukkan PIN untuk mengelola soal dan membuka ruangan ujian.</p>
+        <label>PIN dosen<input id="d-pin" type="password" inputmode="numeric" maxlength="12" autocomplete="off"></label>
+        <button id="d-go" class="btn primary">Masuk sebagai dosen</button>
+        <p id="d-err" class="err"></p>
+      </div>
+      <div id="dosen-menu" class="dlock" hidden>
+        <p class="muted" id="bank-info"></p>
+        <button id="h-edit" class="btn">Kelola soal</button>
+        <button id="h-create" class="btn primary">Buka ruangan ujian</button>
+        <div id="h-resume"></div>
+        <p id="h-err" class="err"></p>
+        <button class="linkbtn" id="d-lock" style="align-self:center;color:var(--slate2);font-size:13px">Kunci menu dosen di perangkat ini</button>
+      </div>
     </div>
   </div>
 </section>
@@ -1070,6 +1081,7 @@ function validateBank() {
   return null;
 }
 async function createRoom() {
+  if (!isDosen()) return renderDosen();
   const err = $('#h-err'); err.textContent = '';
   const bad = validateBank(); if (bad) return err.textContent = bad;
   $('#h-create').disabled = true;
@@ -1285,7 +1297,7 @@ $('#e-list').addEventListener('click', e => {
   if (act === 'delv') { const j = +e.target.closest('.var').dataset.j; if (!confirm(`Hapus variasi ${j + 1}?`)) return; P.variants.splice(j, 1); }
   saveBank(); renderEditor(); document.querySelector(`.pt[data-i="${pt.dataset.i}"]`).open = true;
 });
-$('#e-back').onclick = goHome;
+$('#e-back').onclick = () => goHome();
 $('#e-export').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(BANK, null, 2)], { type: 'application/json' })); a.download = 'soal-jelajah-kampung.json'; document.body.appendChild(a); a.click(); a.remove(); };
 $('#e-import').onclick = () => $('#e-file').click();
 $('#e-file').onchange = async e => {
@@ -1302,6 +1314,31 @@ $('#e-file').onchange = async e => {
   } catch (err) { alert('File tidak bisa dibaca: ' + err.message); }
 };
 
+/* ---------- PIN dosen ---------- */
+const PIN_SALT = 'jk-uby-17c6b6c899826bee', PIN_HASH = '3490b19f5c5b864a0f30d839120dbfb3464ff87cdc1b09e50dd9bac9e782f81a';
+async function pinHash(pin) {
+  const enc = new TextEncoder(), key = await crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: enc.encode(PIN_SALT), iterations: 150000, hash: 'SHA-256' }, key, 256);
+  return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+const isDosen = () => LS.get('jk-dosen', null) === PIN_HASH;
+function renderDosen() { $('#dosen-lock').hidden = isDosen(); $('#dosen-menu').hidden = !isDosen(); }
+let pinFails = 0, pinWait = 0;
+async function tryPin() {
+  const err = $('#d-err'), inp = $('#d-pin'); err.textContent = '';
+  if (Date.now() < pinWait) return err.textContent = `Terlalu banyak percobaan. Coba lagi dalam ${Math.ceil((pinWait - Date.now()) / 1000)} detik.`;
+  const pin = inp.value.trim(); if (!pin) return err.textContent = 'Masukkan PIN dosen.';
+  $('#d-go').disabled = true;
+  try {
+    if (await pinHash(pin) === PIN_HASH) { LS.set('jk-dosen', PIN_HASH); pinFails = 0; inp.value = ''; goHome(); }
+    else { pinFails++; inp.value = ''; if (pinFails >= 5) { pinWait = Date.now() + 30000; pinFails = 0; } err.textContent = 'PIN salah.'; }
+  } catch (e) { err.textContent = 'Tidak bisa memeriksa PIN di browser ini. Buka lewat link https.'; }
+  finally { $('#d-go').disabled = false; }
+}
+$('#d-go').onclick = tryPin;
+$('#d-pin').addEventListener('keydown', e => { if (e.key === 'Enter') tryPin(); });
+$('#d-lock').onclick = () => { LS.del('jk-dosen'); LS.del('jk-host'); goHome(); };
+
 /* ---------- beranda ---------- */
 function goHome() {
   leaveRoom();
@@ -1311,11 +1348,13 @@ function goHome() {
   const hs = LS.get('jk-host', null);
   $('#h-resume').innerHTML = hs ? `<button class="btn ghost" id="h-res" style="width:100%">Lanjutkan ruangan ${esc(hs.code)}</button>` : '';
   if (hs) $('#h-res').onclick = async () => {
+    if (!isDosen()) return renderDosen();
     G.code = hs.code;
     const h = await net.get(RP('host')).catch(() => null);
     if (h !== net.uid) { LS.del('jk-host'); $('#h-err').textContent = 'Ruangan itu sudah tidak ada atau dibuka dari perangkat lain.'; goHome(); return; }
     G.host = hs; startHost();
   };
+  renderDosen();
   show('s-home');
 }
 let SELCH = 0;
@@ -1326,7 +1365,7 @@ $('#j-chars').onclick = e => { const b = e.target.closest('.chr'); if (!b) retur
 $('#j-go').onclick = joinRoom;
 ['#j-code', '#j-name', '#j-nim'].forEach(s => $(s).addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(); }));
 $('#h-create').onclick = createRoom;
-$('#h-edit').onclick = () => { renderEditor(); show('s-edit'); };
+$('#h-edit').onclick = () => { if (!isDosen()) return renderDosen(); renderEditor(); show('s-edit'); };
 $('#demo-reset').onclick = () => { if (confirm('Hapus semua ruangan demo di browser ini?')) { LS.del('jelajah-demo-v1'); LS.del('jk-host'); location.reload(); } };
 
 /* ---------- loop ---------- */
